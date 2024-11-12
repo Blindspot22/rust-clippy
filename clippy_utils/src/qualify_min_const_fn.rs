@@ -18,9 +18,8 @@ use rustc_middle::mir::{
 use rustc_middle::traits::{BuiltinImplSource, ImplSource, ObligationCause};
 use rustc_middle::ty::adjustment::PointerCoercion;
 use rustc_middle::ty::{self, GenericArgKind, TraitRef, Ty, TyCtxt};
-use rustc_semver::RustcVersion;
-use rustc_span::symbol::sym;
 use rustc_span::Span;
+use rustc_span::symbol::sym;
 use rustc_trait_selection::traits::{ObligationCtxt, SelectionContext};
 use std::borrow::Cow;
 
@@ -110,7 +109,7 @@ fn check_rvalue<'tcx>(
 ) -> McfResult {
     match rvalue {
         Rvalue::ThreadLocalRef(_) => Err((span, "cannot access thread local storage in const fn".into())),
-        Rvalue::Len(place) | Rvalue::Discriminant(place) | Rvalue::Ref(_, _, place) | Rvalue::AddressOf(_, place) => {
+        Rvalue::Len(place) | Rvalue::Discriminant(place) | Rvalue::Ref(_, _, place) | Rvalue::RawPtr(_, place) => {
             check_place(tcx, *place, span, body, msrv)
         },
         Rvalue::CopyForDeref(place) => check_place(tcx, *place, span, body, msrv),
@@ -124,7 +123,7 @@ fn check_rvalue<'tcx>(
             | CastKind::FloatToFloat
             | CastKind::FnPtrToPtr
             | CastKind::PtrToPtr
-            | CastKind::PointerCoercion(PointerCoercion::MutToConstPointer | PointerCoercion::ArrayToPointer),
+            | CastKind::PointerCoercion(PointerCoercion::MutToConstPointer | PointerCoercion::ArrayToPointer, _),
             operand,
             _,
         ) => check_operand(tcx, operand, span, body, msrv),
@@ -133,16 +132,17 @@ fn check_rvalue<'tcx>(
                 PointerCoercion::UnsafeFnPointer
                 | PointerCoercion::ClosureFnPointer(_)
                 | PointerCoercion::ReifyFnPointer,
+                _,
             ),
             _,
             _,
         ) => Err((span, "function pointer casts are not allowed in const fn".into())),
-        Rvalue::Cast(CastKind::PointerCoercion(PointerCoercion::Unsize), op, cast_ty) => {
+        Rvalue::Cast(CastKind::PointerCoercion(PointerCoercion::Unsize, _), op, cast_ty) => {
             let Some(pointee_ty) = cast_ty.builtin_deref(true) else {
                 // We cannot allow this for now.
                 return Err((span, "unsizing casts are only allowed for references right now".into()));
             };
-            let unsized_ty = tcx.struct_tail_erasing_lifetimes(pointee_ty, tcx.param_env(def_id));
+            let unsized_ty = tcx.struct_tail_for_codegen(pointee_ty, tcx.param_env(def_id));
             if let ty::Slice(_) | ty::Str = unsized_ty.kind() {
                 check_operand(tcx, op, span, body, msrv)?;
                 // Casting/coercing things to slices is fine.
@@ -155,7 +155,7 @@ fn check_rvalue<'tcx>(
         Rvalue::Cast(CastKind::PointerExposeProvenance, _, _) => {
             Err((span, "casting pointers to ints is unstable in const fn".into()))
         },
-        Rvalue::Cast(CastKind::DynStar, _, _) => {
+        Rvalue::Cast(CastKind::PointerCoercion(PointerCoercion::DynStar, _), _, _) => {
             // FIXME(dyn-star)
             unimplemented!()
         },
@@ -334,7 +334,7 @@ fn check_terminator<'tcx>(
         | TerminatorKind::TailCall { func, args, fn_span: _ } => {
             let fn_ty = func.ty(body, tcx);
             if let ty::FnDef(fn_def_id, _) = *fn_ty.kind() {
-                if !is_const_fn(tcx, fn_def_id, msrv) {
+                if !is_stable_const_fn(tcx, fn_def_id, msrv) {
                     return Err((
                         span,
                         format!(
@@ -377,12 +377,12 @@ fn check_terminator<'tcx>(
     }
 }
 
-fn is_const_fn(tcx: TyCtxt<'_>, def_id: DefId, msrv: &Msrv) -> bool {
+fn is_stable_const_fn(tcx: TyCtxt<'_>, def_id: DefId, msrv: &Msrv) -> bool {
     tcx.is_const_fn(def_id)
-        && tcx.lookup_const_stability(def_id).map_or(true, |const_stab| {
+        && tcx.lookup_const_stability(def_id).is_none_or(|const_stab| {
             if let rustc_attr::StabilityLevel::Stable { since, .. } = const_stab.level {
                 // Checking MSRV is manually necessary because `rustc` has no such concept. This entire
-                // function could be removed if `rustc` provided a MSRV-aware version of `is_const_fn`.
+                // function could be removed if `rustc` provided a MSRV-aware version of `is_stable_const_fn`.
                 // as a part of an unimplemented MSRV check https://github.com/rust-lang/rust/issues/65262.
 
                 let const_stab_rust_version = match since {
@@ -391,20 +391,20 @@ fn is_const_fn(tcx: TyCtxt<'_>, def_id: DefId, msrv: &Msrv) -> bool {
                     StableSince::Err => return false,
                 };
 
-                msrv.meets(RustcVersion::new(
-                    u32::from(const_stab_rust_version.major),
-                    u32::from(const_stab_rust_version.minor),
-                    u32::from(const_stab_rust_version.patch),
-                ))
+                msrv.meets(const_stab_rust_version)
             } else {
-                // Unstable const fn with the feature enabled.
-                msrv.current().is_none()
+                // Unstable const fn, check if the feature is enabled. We need both the regular stability
+                // feature and (if set) the const stability feature to const-call this function.
+                let stab = tcx.lookup_stability(def_id);
+                let is_enabled = stab.is_some_and(|s| s.is_stable() || tcx.features().enabled(s.feature))
+                    && const_stab.feature.is_none_or(|f| tcx.features().enabled(f));
+                is_enabled && msrv.current().is_none()
             }
         })
 }
 
 fn is_ty_const_destruct<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, body: &Body<'tcx>) -> bool {
-    // FIXME(effects, fee1-dead) revert to const destruct once it works again
+    // FIXME(const_trait_impl, fee1-dead) revert to const destruct once it works again
     #[expect(unused)]
     fn is_ty_const_destruct_unused<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, body: &Body<'tcx>) -> bool {
         // Avoid selecting for simple cases, such as builtin types.
@@ -412,7 +412,7 @@ fn is_ty_const_destruct<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, body: &Body<'tcx>
             return true;
         }
 
-        // FIXME(effects) constness
+        // FIXME(const_trait_impl) constness
         let obligation = Obligation::new(
             tcx,
             ObligationCause::dummy_with_span(body.span),
@@ -420,7 +420,7 @@ fn is_ty_const_destruct<'tcx>(tcx: TyCtxt<'tcx>, ty: Ty<'tcx>, body: &Body<'tcx>
             TraitRef::new(tcx, tcx.require_lang_item(LangItem::Destruct, Some(body.span)), [ty]),
         );
 
-        let infcx = tcx.infer_ctxt().build();
+        let infcx = tcx.infer_ctxt().build(body.typing_mode(tcx));
         let mut selcx = SelectionContext::new(&infcx);
         let Some(impl_src) = selcx.select(&obligation).ok().flatten() else {
             return false;

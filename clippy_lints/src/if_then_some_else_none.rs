@@ -1,10 +1,12 @@
-use clippy_config::msrvs::{self, Msrv};
 use clippy_config::Conf;
+use clippy_config::msrvs::{self, Msrv};
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::eager_or_lazy::switch_to_eager_eval;
 use clippy_utils::source::snippet_with_context;
 use clippy_utils::sugg::Sugg;
-use clippy_utils::{contains_return, higher, in_constant, is_else_clause, is_res_lang_ctor, path_res, peel_blocks};
+use clippy_utils::{
+    contains_return, higher, is_else_clause, is_in_const_context, is_res_lang_ctor, path_res, peel_blocks,
+};
 use rustc_errors::Applicability;
 use rustc_hir::LangItem::{OptionNone, OptionSome};
 use rustc_hir::{Expr, ExprKind};
@@ -76,7 +78,7 @@ impl<'tcx> LateLintPass<'tcx> for IfThenSomeElseNone {
             && is_res_lang_ctor(cx, path_res(cx, then_call), OptionSome)
             && is_res_lang_ctor(cx, path_res(cx, peel_blocks(els)), OptionNone)
             && !is_else_clause(cx.tcx, expr)
-            && !in_constant(cx, expr.hir_id)
+            && !is_in_const_context(cx)
             && !in_external_macro(cx.sess(), expr.span)
             && self.msrv.meets(msrvs::BOOL_THEN)
             && !contains_return(then_block.stmts)
@@ -103,6 +105,8 @@ impl<'tcx> LateLintPass<'tcx> for IfThenSomeElseNone {
                             snippet_with_context(cx, first_stmt.span.until(then_arg.span), ctxt, "..", &mut app);
                         let closure = if method_name == "then" { "|| " } else { "" };
                         format!("{closure} {{ {block_snippet}; {arg_snip} }}")
+                    } else if method_name == "then" {
+                        (std::borrow::Cow::Borrowed("|| ") + arg_snip).into_owned()
                     } else {
                         arg_snip.into_owned()
                     };

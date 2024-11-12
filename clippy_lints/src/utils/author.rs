@@ -1,9 +1,6 @@
-//! A group of attributes that can be attached to Rust code in order
-//! to generate a clippy lint detecting said code automatically.
-
 use clippy_utils::{get_attr, higher};
-use rustc_ast::ast::{LitFloatType, LitKind};
 use rustc_ast::LitIntType;
+use rustc_ast::ast::{LitFloatType, LitKind};
 use rustc_data_structures::fx::FxHashMap;
 use rustc_hir::{
     self as hir, ArrayLen, BindingMode, CaptureBy, Closure, ClosureKind, ConstArg, ConstArgKind, CoroutineKind,
@@ -399,7 +396,7 @@ impl<'a, 'tcx> PrintVisitor<'a, 'tcx> {
                 self.pat(field!(let_expr.pat));
                 // Does what ExprKind::Cast does, only adds a clause for the type
                 // if it's a path
-                if let Some(TyKind::Path(ref qpath)) = let_expr.value.ty.as_ref().map(|ty| &ty.kind) {
+                if let Some(TyKind::Path(qpath)) = let_expr.value.ty.as_ref().map(|ty| &ty.kind) {
                     bind!(self, qpath);
                     chain!(self, "let TyKind::Path(ref {qpath}) = {let_expr}.ty.kind");
                     self.qpath(qpath);

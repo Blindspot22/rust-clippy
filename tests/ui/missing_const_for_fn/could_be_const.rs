@@ -1,7 +1,6 @@
 #![warn(clippy::missing_const_for_fn)]
 #![allow(incomplete_features, clippy::let_and_return, clippy::missing_transmute_annotations)]
-#![feature(const_mut_refs)]
-#![feature(const_trait_impl)]
+#![feature(const_trait_impl, abi_vectorcall)]
 
 use std::mem::transmute;
 
@@ -104,7 +103,7 @@ fn main() {}
 
 struct D;
 
-/* FIXME(effects)
+/* FIXME(const_trait_impl)
 impl const Drop for D {
     fn drop(&mut self) {
         todo!();
@@ -113,7 +112,7 @@ impl const Drop for D {
 */
 
 // Lint this, since it can be dropped in const contexts
-// FIXME(effects)
+// FIXME(const_trait_impl)
 fn d(this: D) {}
 //~^ ERROR: this could be a `const fn`
 
@@ -203,4 +202,17 @@ mod with_ty_alias {
     // is. Because the associate ty could have no default, therefore would cause ICE, as demonstrated
     // in this test.
     fn alias_ty_is_projection(bar: <() as FooTrait>::Foo) {}
+}
+
+mod extern_fn {
+    extern "C-unwind" fn c_unwind() {}
+    //~^ ERROR: this could be a `const fn`
+    extern "system" fn system() {}
+    //~^ ERROR: this could be a `const fn`
+    extern "system-unwind" fn system_unwind() {}
+    //~^ ERROR: this could be a `const fn`
+    pub extern "vectorcall" fn std_call() {}
+    //~^ ERROR: this could be a `const fn`
+    pub extern "vectorcall-unwind" fn std_call_unwind() {}
+    //~^ ERROR: this could be a `const fn`
 }

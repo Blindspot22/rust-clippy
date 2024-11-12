@@ -1,38 +1,3 @@
-//! Checks for continue statements in loops that are redundant.
-//!
-//! For example, the lint would catch
-//!
-//! ```rust
-//! let mut a = 1;
-//! let x = true;
-//!
-//! while a < 5 {
-//!     a = 6;
-//!     if x {
-//!         // ...
-//!     } else {
-//!         continue;
-//!     }
-//!     println!("Hello, world");
-//! }
-//! ```
-//!
-//! And suggest something like this:
-//!
-//! ```rust
-//! let mut a = 1;
-//! let x = true;
-//!
-//! while a < 5 {
-//!     a = 6;
-//!     if x {
-//!         // ...
-//!         println!("Hello, world");
-//!     }
-//! }
-//! ```
-//!
-//! This lint is **warn** by default.
 use clippy_utils::diagnostics::span_lint_and_help;
 use clippy_utils::source::{indent_of, snippet, snippet_block};
 use rustc_ast::ast;
@@ -365,10 +330,11 @@ fn suggestion_snippet_for_continue_inside_else(cx: &EarlyContext<'_>, data: &Lin
 }
 
 fn check_and_warn(cx: &EarlyContext<'_>, expr: &ast::Expr) {
-    if let ast::ExprKind::Loop(loop_block, ..) = &expr.kind
+    if let ast::ExprKind::Loop(loop_block, loop_label, ..) = &expr.kind
         && let Some(last_stmt) = loop_block.stmts.last()
         && let ast::StmtKind::Expr(inner_expr) | ast::StmtKind::Semi(inner_expr) = &last_stmt.kind
-        && let ast::ExprKind::Continue(_) = inner_expr.kind
+        && let ast::ExprKind::Continue(continue_label) = inner_expr.kind
+        && compare_labels(loop_label.as_ref(), continue_label.as_ref())
     {
         span_lint_and_help(
             cx,

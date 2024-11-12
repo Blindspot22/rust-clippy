@@ -1,8 +1,9 @@
 use rustc_ast::Attribute;
-use rustc_semver::RustcVersion;
-use rustc_session::Session;
-use rustc_span::{sym, Symbol};
+use rustc_attr::parse_version;
+use rustc_session::{RustcVersion, Session};
+use rustc_span::{Symbol, sym};
 use serde::Deserialize;
+use smallvec::{SmallVec, smallvec};
 use std::fmt;
 
 macro_rules! msrv_aliases {
@@ -10,22 +11,26 @@ macro_rules! msrv_aliases {
         $($name:ident),* $(,)?
     })*) => {
         $($(
-        pub const $name: RustcVersion = RustcVersion::new($major, $minor, $patch);
+        pub const $name: RustcVersion = RustcVersion { major: $major, minor :$minor, patch: $patch };
         )*)*
     };
 }
 
 // names may refer to stabilized feature flags or library items
 msrv_aliases! {
-    1,81,0  { LINT_REASONS_STABILIZATION }
+    1,83,0 { CONST_EXTERN_FN, CONST_FLOAT_BITS_CONV, CONST_FLOAT_CLASSIFY }
+    1,82,0 { IS_NONE_OR, REPEAT_N }
+    1,81,0 { LINT_REASONS_STABILIZATION }
+    1,80,0 { BOX_INTO_ITER}
     1,77,0 { C_STR_LITERALS }
     1,76,0 { PTR_FROM_REF, OPTION_RESULT_INSPECT }
+    1,73,0 { MANUAL_DIV_CEIL }
     1,71,0 { TUPLE_ARRAY_CONVERSIONS, BUILD_HASHER_HASH_ONE }
     1,70,0 { OPTION_RESULT_IS_VARIANT_AND, BINARY_HEAP_RETAIN }
     1,68,0 { PATH_MAIN_SEPARATOR_STR }
     1,65,0 { LET_ELSE, POINTER_CAST_CONSTNESS }
     1,63,0 { CLONE_INTO }
-    1,62,0 { BOOL_THEN_SOME, DEFAULT_ENUM_ATTRIBUTE, CONST_EXTERN_FN }
+    1,62,0 { BOOL_THEN_SOME, DEFAULT_ENUM_ATTRIBUTE, CONST_EXTERN_C_FN }
     1,59,0 { THREAD_LOCAL_CONST_INIT }
     1,58,0 { FORMAT_ARGS_CAPTURE, PATTERN_TRAIT_CHAR_ARRAY, CONST_RAW_PTR_DEREF }
     1,56,0 { CONST_FN_UNION }
@@ -35,7 +40,7 @@ msrv_aliases! {
     1,52,0 { STR_SPLIT_ONCE, REM_EUCLID_CONST }
     1,51,0 { BORROW_AS_PTR, SEEK_FROM_CURRENT, UNSIGNED_ABS }
     1,50,0 { BOOL_THEN, CLAMP }
-    1,47,0 { TAU, IS_ASCII_DIGIT_CONST, ARRAY_IMPL_ANY_LEN }
+    1,47,0 { TAU, IS_ASCII_DIGIT_CONST, ARRAY_IMPL_ANY_LEN, SATURATING_SUB_CONST }
     1,46,0 { CONST_IF_MATCH }
     1,45,0 { STR_STRIP_PREFIX }
     1,43,0 { LOG2_10, LOG10_2, NUMERIC_ASSOCIATED_CONSTANTS }
@@ -47,9 +52,10 @@ msrv_aliases! {
     1,36,0 { ITERATOR_COPIED }
     1,35,0 { OPTION_COPIED, RANGE_CONTAINS }
     1,34,0 { TRY_FROM }
+    1,33,0 { UNDERSCORE_IMPORTS }
     1,30,0 { ITERATOR_FIND_MAP, TOOL_ATTRIBUTES }
     1,29,0 { ITER_FLATTEN }
-    1,28,0 { FROM_BOOL }
+    1,28,0 { FROM_BOOL, REPEAT_WITH }
     1,27,0 { ITERATOR_TRY_FOLD }
     1,26,0 { RANGE_INCLUSIVE, STRING_RETAIN }
     1,24,0 { IS_ASCII_DIGIT }
@@ -62,7 +68,7 @@ msrv_aliases! {
 /// Tracks the current MSRV from `clippy.toml`, `Cargo.toml` or set via `#[clippy::msrv]`
 #[derive(Debug, Clone)]
 pub struct Msrv {
-    stack: Vec<RustcVersion>,
+    stack: SmallVec<[RustcVersion; 2]>,
 }
 
 impl fmt::Display for Msrv {
@@ -81,24 +87,24 @@ impl<'de> Deserialize<'de> for Msrv {
         D: serde::Deserializer<'de>,
     {
         let v = String::deserialize(deserializer)?;
-        RustcVersion::parse(&v)
-            .map(|v| Msrv { stack: vec![v] })
-            .map_err(|_| serde::de::Error::custom("not a valid Rust version"))
+        parse_version(Symbol::intern(&v))
+            .map(|v| Msrv { stack: smallvec![v] })
+            .ok_or_else(|| serde::de::Error::custom("not a valid Rust version"))
     }
 }
 
 impl Msrv {
     pub fn empty() -> Msrv {
-        Msrv { stack: Vec::new() }
+        Msrv { stack: SmallVec::new() }
     }
 
     pub fn read_cargo(&mut self, sess: &Session) {
         let cargo_msrv = std::env::var("CARGO_PKG_RUST_VERSION")
             .ok()
-            .and_then(|v| RustcVersion::parse(&v).ok());
+            .and_then(|v| parse_version(Symbol::intern(&v)));
 
         match (self.current(), cargo_msrv) {
-            (None, Some(cargo_msrv)) => self.stack = vec![cargo_msrv],
+            (None, Some(cargo_msrv)) => self.stack = smallvec![cargo_msrv],
             (Some(clippy_msrv), Some(cargo_msrv)) => {
                 if clippy_msrv != cargo_msrv {
                     sess.dcx().warn(format!(
@@ -115,7 +121,7 @@ impl Msrv {
     }
 
     pub fn meets(&self, required: RustcVersion) -> bool {
-        self.current().map_or(true, |version| version.meets(required))
+        self.current().map_or(true, |msrv| msrv >= required)
     }
 
     fn parse_attr(sess: &Session, attrs: &[Attribute]) -> Option<RustcVersion> {
@@ -131,7 +137,7 @@ impl Msrv {
             }
 
             if let Some(msrv) = msrv_attr.value_str() {
-                if let Ok(version) = RustcVersion::parse(msrv.as_str()) {
+                if let Some(version) = parse_version(msrv) {
                     return Some(version);
                 }
 

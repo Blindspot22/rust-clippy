@@ -1,7 +1,5 @@
-//! lint on indexing and slicing operations
-
 use clippy_config::Conf;
-use clippy_utils::consts::{constant, Constant};
+use clippy_utils::consts::{ConstEvalCtxt, Constant};
 use clippy_utils::diagnostics::{span_lint, span_lint_and_then};
 use clippy_utils::ty::{deref_chain, get_adt_inherent_method};
 use clippy_utils::{higher, is_from_proc_macro};
@@ -116,7 +114,7 @@ impl<'tcx> LateLintPass<'tcx> for IndexingSlicing {
             if let Some(range) = higher::Range::hir(index) {
                 // Ranged indexes, i.e., &x[n..m], &x[n..], &x[..n] and &x[..]
                 if let ty::Array(_, s) = ty.kind() {
-                    let size: u128 = if let Some(size) = s.try_eval_target_usize(cx.tcx, cx.param_env) {
+                    let size: u128 = if let Some(size) = s.try_to_target_usize(cx.tcx) {
                         size.into()
                     } else {
                         return;
@@ -177,7 +175,7 @@ impl<'tcx> LateLintPass<'tcx> for IndexingSlicing {
                         return;
                     }
                     // Index is a constant uint.
-                    if let Some(constant) = constant(cx, cx.typeck_results(), index) {
+                    if let Some(constant) = ConstEvalCtxt::new(cx).eval(index) {
                         // only `usize` index is legal in rust array index
                         // leave other type to rustc
                         if let Constant::Int(off) = constant
@@ -185,7 +183,7 @@ impl<'tcx> LateLintPass<'tcx> for IndexingSlicing {
                             && let ty::Uint(utype) = cx.typeck_results().expr_ty(index).kind()
                             && *utype == ty::UintTy::Usize
                             && let ty::Array(_, s) = ty.kind()
-                            && let Some(size) = s.try_eval_target_usize(cx.tcx, cx.param_env)
+                            && let Some(size) = s.try_to_target_usize(cx.tcx)
                         {
                             // get constant offset and check whether it is in bounds
                             let off = usize::try_from(off).unwrap();
@@ -215,14 +213,15 @@ impl<'tcx> LateLintPass<'tcx> for IndexingSlicing {
 /// Returns a tuple of options with the start and end (exclusive) values of
 /// the range. If the start or end is not constant, None is returned.
 fn to_const_range(cx: &LateContext<'_>, range: higher::Range<'_>, array_size: u128) -> (Option<u128>, Option<u128>) {
-    let s = range.start.map(|expr| constant(cx, cx.typeck_results(), expr));
+    let ecx = ConstEvalCtxt::new(cx);
+    let s = range.start.map(|expr| ecx.eval(expr));
     let start = match s {
         Some(Some(Constant::Int(x))) => Some(x),
         Some(_) => None,
         None => Some(0),
     };
 
-    let e = range.end.map(|expr| constant(cx, cx.typeck_results(), expr));
+    let e = range.end.map(|expr| ecx.eval(expr));
     let end = match e {
         Some(Some(Constant::Int(x))) => {
             if range.limits == RangeLimits::Closed {

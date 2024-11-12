@@ -68,7 +68,7 @@ impl Crate {
         total_crates_to_lint: usize,
         config: &LintcheckConfig,
         lint_levels_args: &[String],
-        server: &Option<LintcheckServer>,
+        server: Option<&LintcheckServer>,
     ) -> Vec<ClippyCheckOutput> {
         // advance the atomic index by one
         let index = target_dir_index.fetch_add(1, Ordering::SeqCst);
@@ -119,7 +119,8 @@ impl Crate {
         cmd.arg(if config.fix { "fix" } else { "check" })
             .arg("--quiet")
             .current_dir(&self.path)
-            .env("CLIPPY_ARGS", clippy_args.join("__CLIPPY_HACKERY__"));
+            .env("CLIPPY_ARGS", clippy_args.join("__CLIPPY_HACKERY__"))
+            .env("CLIPPY_DISABLE_DOCS_LINKS", "1");
 
         if let Some(server) = server {
             // `cargo clippy` is a wrapper around `cargo check` that mainly sets `RUSTC_WORKSPACE_WRAPPER` to
@@ -358,7 +359,7 @@ fn lintcheck(config: LintcheckConfig) {
                 crates.len(),
                 &config,
                 &lint_level_args,
-                &server,
+                server.as_ref(),
             )
         })
         .collect();

@@ -4,10 +4,10 @@ use rustc_lexer::TokenKind;
 use rustc_lint::LateContext;
 use rustc_middle::ty::{AdtDef, TyCtxt};
 use rustc_session::Session;
-use rustc_span::{sym, Span};
+use rustc_span::{Span, sym};
 use std::str::FromStr;
 
-use crate::source::snippet_opt;
+use crate::source::SpanRangeExt;
 use crate::tokenize_with_text;
 
 /// Deprecation status of attributes known by Clippy.
@@ -179,25 +179,23 @@ pub fn has_non_exhaustive_attr(tcx: TyCtxt<'_>, adt: AdtDef<'_>) -> bool {
 
 /// Checks if the given span contains a `#[cfg(..)]` attribute
 pub fn span_contains_cfg(cx: &LateContext<'_>, s: Span) -> bool {
-    let Some(snip) = snippet_opt(cx, s) else {
-        // Assume true. This would require either an invalid span, or one which crosses file boundaries.
-        return true;
-    };
-    let mut iter = tokenize_with_text(&snip);
+    s.check_source_text(cx, |src| {
+        let mut iter = tokenize_with_text(src);
 
-    // Search for the token sequence [`#`, `[`, `cfg`]
-    while iter.any(|(t, _)| matches!(t, TokenKind::Pound)) {
-        let mut iter = iter.by_ref().skip_while(|(t, _)| {
-            matches!(
-                t,
-                TokenKind::Whitespace | TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
-            )
-        });
-        if matches!(iter.next(), Some((TokenKind::OpenBracket, _)))
-            && matches!(iter.next(), Some((TokenKind::Ident, "cfg")))
-        {
-            return true;
+        // Search for the token sequence [`#`, `[`, `cfg`]
+        while iter.any(|(t, ..)| matches!(t, TokenKind::Pound)) {
+            let mut iter = iter.by_ref().skip_while(|(t, ..)| {
+                matches!(
+                    t,
+                    TokenKind::Whitespace | TokenKind::LineComment { .. } | TokenKind::BlockComment { .. }
+                )
+            });
+            if matches!(iter.next(), Some((TokenKind::OpenBracket, ..)))
+                && matches!(iter.next(), Some((TokenKind::Ident, "cfg", _)))
+            {
+                return true;
+            }
         }
-    }
-    false
+        false
+    })
 }

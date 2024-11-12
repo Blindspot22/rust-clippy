@@ -3,7 +3,7 @@ use clippy_utils::numeric_literal;
 use clippy_utils::source::snippet_opt;
 use rustc_ast::ast::{LitFloatType, LitIntType, LitKind};
 use rustc_errors::Applicability;
-use rustc_hir::intravisit::{walk_expr, walk_stmt, Visitor};
+use rustc_hir::intravisit::{Visitor, walk_expr, walk_stmt};
 use rustc_hir::{Block, Body, ConstContext, Expr, ExprKind, FnRetTy, HirId, Lit, Stmt, StmtKind};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
@@ -119,7 +119,7 @@ impl<'a, 'tcx> NumericFallbackVisitor<'a, 'tcx> {
     }
 }
 
-impl<'a, 'tcx> Visitor<'tcx> for NumericFallbackVisitor<'a, 'tcx> {
+impl<'tcx> Visitor<'tcx> for NumericFallbackVisitor<'_, 'tcx> {
     fn visit_expr(&mut self, expr: &'tcx Expr<'_>) {
         match &expr.kind {
             ExprKind::Block(
@@ -236,7 +236,7 @@ fn fn_sig_opt<'tcx>(cx: &LateContext<'tcx>, hir_id: HirId) -> Option<PolyFnSig<'
     // We can't use `Ty::fn_sig` because it automatically performs args, this may result in FNs.
     match node_ty.kind() {
         ty::FnDef(def_id, _) => Some(cx.tcx.fn_sig(*def_id).instantiate_identity()),
-        ty::FnPtr(fn_sig) => Some(*fn_sig),
+        ty::FnPtr(sig_tys, hdr) => Some(sig_tys.with(*hdr)),
         _ => None,
     }
 }

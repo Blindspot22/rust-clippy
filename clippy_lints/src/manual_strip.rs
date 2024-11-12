@@ -1,20 +1,20 @@
-use clippy_config::msrvs::{self, Msrv};
 use clippy_config::Conf;
-use clippy_utils::consts::{constant, Constant};
+use clippy_config::msrvs::{self, Msrv};
+use clippy_utils::consts::{ConstEvalCtxt, Constant};
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::source::snippet;
 use clippy_utils::usage::mutated_variables;
-use clippy_utils::{eq_expr_value, higher, match_def_path, paths};
+use clippy_utils::{eq_expr_value, higher};
 use rustc_ast::ast::LitKind;
 use rustc_errors::Applicability;
 use rustc_hir::def::Res;
-use rustc_hir::intravisit::{walk_expr, Visitor};
+use rustc_hir::intravisit::{Visitor, walk_expr};
 use rustc_hir::{BinOpKind, BorrowKind, Expr, ExprKind};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty;
 use rustc_session::impl_lint_pass;
 use rustc_span::source_map::Spanned;
-use rustc_span::Span;
+use rustc_span::{Span, sym};
 use std::iter;
 
 declare_clippy_lint! {
@@ -76,9 +76,9 @@ impl<'tcx> LateLintPass<'tcx> for ManualStrip {
             && self.msrv.meets(msrvs::STR_STRIP_PREFIX)
             && let Some(method_def_id) = cx.typeck_results().type_dependent_def_id(cond.hir_id)
         {
-            let strip_kind = if match_def_path(cx, method_def_id, &paths::STR_STARTS_WITH) {
+            let strip_kind = if cx.tcx.is_diagnostic_item(sym::str_starts_with, method_def_id) {
                 StripKind::Prefix
-            } else if match_def_path(cx, method_def_id, &paths::STR_ENDS_WITH) {
+            } else if cx.tcx.is_diagnostic_item(sym::str_ends_with, method_def_id) {
                 StripKind::Suffix
             } else {
                 return;
@@ -137,7 +137,7 @@ impl<'tcx> LateLintPass<'tcx> for ManualStrip {
 fn len_arg<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<&'tcx Expr<'tcx>> {
     if let ExprKind::MethodCall(_, arg, [], _) = expr.kind
         && let Some(method_def_id) = cx.typeck_results().type_dependent_def_id(expr.hir_id)
-        && match_def_path(cx, method_def_id, &paths::STR_LEN)
+        && cx.tcx.is_diagnostic_item(sym::str_len, method_def_id)
     {
         Some(arg)
     } else {
@@ -147,7 +147,7 @@ fn len_arg<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) -> Option<&'tcx E
 
 // Returns the length of the `expr` if it's a constant string or char.
 fn constant_length(cx: &LateContext<'_>, expr: &Expr<'_>) -> Option<u128> {
-    let value = constant(cx, cx.typeck_results(), expr)?;
+    let value = ConstEvalCtxt::new(cx).eval(expr)?;
     match value {
         Constant::Str(value) => Some(value.len() as u128),
         Constant::Char(value) => Some(value.len_utf8() as u128),
@@ -203,7 +203,7 @@ fn find_stripping<'tcx>(
         results: Vec<Span>,
     }
 
-    impl<'a, 'tcx> Visitor<'tcx> for StrippingFinder<'a, 'tcx> {
+    impl<'tcx> Visitor<'tcx> for StrippingFinder<'_, 'tcx> {
         fn visit_expr(&mut self, ex: &'tcx Expr<'_>) {
             if is_ref_str(self.cx, ex)
                 && let unref = peel_ref(ex)

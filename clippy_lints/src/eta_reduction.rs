@@ -1,7 +1,7 @@
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
 use clippy_utils::higher::VecArgs;
 use clippy_utils::source::snippet_opt;
-use clippy_utils::ty::type_diagnostic_name;
+use clippy_utils::ty::get_type_diagnostic_name;
 use clippy_utils::usage::{local_used_after_expr, local_used_in};
 use clippy_utils::{get_path_from_caller_to_method_type, is_adjusted, path_to_local, path_to_local_id};
 use rustc_errors::Applicability;
@@ -139,7 +139,7 @@ fn check_clousure<'tcx>(cx: &LateContext<'tcx>, outer_receiver: Option<&Expr<'tc
         {
             let callee_ty_raw = typeck.expr_ty(callee);
             let callee_ty = callee_ty_raw.peel_refs();
-            if matches!(type_diagnostic_name(cx, callee_ty), Some(sym::Arc | sym::Rc))
+            if matches!(get_type_diagnostic_name(cx, callee_ty), Some(sym::Arc | sym::Rc))
                 || !check_inputs(typeck, body.params, None, args)
             {
                 return;
@@ -158,7 +158,7 @@ fn check_clousure<'tcx>(cx: &LateContext<'tcx>, outer_receiver: Option<&Expr<'tc
 
                     cx.tcx.fn_sig(def).skip_binder().skip_binder()
                 },
-                ty::FnPtr(sig) => sig.skip_binder(),
+                ty::FnPtr(sig_tys, hdr) => sig_tys.with(*hdr).skip_binder(),
                 ty::Closure(_, subs) => cx
                     .tcx
                     .signature_unclosure(subs.as_closure().sig(), Safety::Safe)
@@ -203,11 +203,16 @@ fn check_clousure<'tcx>(cx: &LateContext<'tcx>, outer_receiver: Option<&Expr<'tc
                             // 'cuz currently nothing changes after deleting this check.
                             local_used_in(cx, l, args) || local_used_after_expr(cx, l, expr)
                         }) {
-                            match cx.tcx.infer_ctxt().build().err_ctxt().type_implements_fn_trait(
-                                cx.param_env,
-                                Binder::bind_with_vars(callee_ty_adjusted, List::empty()),
-                                ty::PredicatePolarity::Positive,
-                            ) {
+                            match cx
+                                .tcx
+                                .infer_ctxt()
+                                .build(cx.typing_mode())
+                                .err_ctxt()
+                                .type_implements_fn_trait(
+                                    cx.param_env,
+                                    Binder::bind_with_vars(callee_ty_adjusted, List::empty()),
+                                    ty::PredicatePolarity::Positive,
+                                ) {
                                 // Mutable closure is used after current expr; we cannot consume it.
                                 Ok((ClosureKind::FnMut, _)) => snippet = format!("&mut {snippet}"),
                                 Ok((ClosureKind::Fn, _)) if !callee_ty_raw.is_ref() => {

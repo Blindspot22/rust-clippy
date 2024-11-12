@@ -1,5 +1,5 @@
-use clippy_config::msrvs::Msrv;
 use clippy_config::Conf;
+use clippy_config::msrvs::Msrv;
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::is_from_proc_macro;
 use rustc_attr::{StabilityLevel, StableSince};
@@ -9,10 +9,9 @@ use rustc_hir::def_id::DefId;
 use rustc_hir::{HirId, Path, PathSegment};
 use rustc_lint::{LateContext, LateLintPass, LintContext};
 use rustc_middle::lint::in_external_macro;
-use rustc_semver::RustcVersion;
 use rustc_session::impl_lint_pass;
 use rustc_span::symbol::kw;
-use rustc_span::{sym, Span};
+use rustc_span::{Span, sym};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -185,9 +184,7 @@ fn is_stable(cx: &LateContext<'_>, mut def_id: DefId, msrv: &Msrv) -> bool {
             } = stability.level
         {
             let stable = match since {
-                StableSince::Version(v) => {
-                    msrv.meets(RustcVersion::new(v.major.into(), v.minor.into(), v.patch.into()))
-                },
+                StableSince::Version(v) => msrv.meets(v),
                 StableSince::Current => msrv.current().is_none(),
                 StableSince::Err => false,
             };

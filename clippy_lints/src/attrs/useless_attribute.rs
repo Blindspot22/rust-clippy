@@ -1,15 +1,14 @@
+use super::USELESS_ATTRIBUTE;
 use super::utils::{extract_clippy_lint, is_lint_level, is_word};
-use super::{Attribute, USELESS_ATTRIBUTE};
 use clippy_utils::diagnostics::span_lint_and_then;
-use clippy_utils::source::{first_line_of_span, snippet_opt};
-use rustc_ast::NestedMetaItem;
+use clippy_utils::source::{SpanRangeExt, first_line_of_span};
+use rustc_ast::{Attribute, Item, ItemKind, MetaItemInner};
 use rustc_errors::Applicability;
-use rustc_hir::{Item, ItemKind};
-use rustc_lint::{LateContext, LintContext};
+use rustc_lint::{EarlyContext, LintContext};
 use rustc_middle::lint::in_external_macro;
 use rustc_span::sym;
 
-pub(super) fn check(cx: &LateContext<'_>, item: &Item<'_>, attrs: &[Attribute]) {
+pub(super) fn check(cx: &EarlyContext<'_>, item: &Item, attrs: &[Attribute]) {
     let skip_unused_imports = attrs.iter().any(|attr| attr.has_name(sym::macro_use));
 
     for attr in attrs {
@@ -21,7 +20,7 @@ pub(super) fn check(cx: &LateContext<'_>, item: &Item<'_>, attrs: &[Attribute]) 
                 for lint in lint_list {
                     match item.kind {
                         ItemKind::Use(..) => {
-                            if let NestedMetaItem::MetaItem(meta_item) = lint
+                            if let MetaItemInner::MetaItem(meta_item) = lint
                                 && meta_item.is_word()
                                 && let Some(ident) = meta_item.ident()
                                 && matches!(
@@ -51,6 +50,7 @@ pub(super) fn check(cx: &LateContext<'_>, item: &Item<'_>, attrs: &[Attribute]) 
                                         | "module_name_repetitions"
                                         | "single_component_path_imports"
                                         | "disallowed_types"
+                                        | "unused_trait_names"
                                 )
                             }) {
                                 return;
@@ -69,14 +69,14 @@ pub(super) fn check(cx: &LateContext<'_>, item: &Item<'_>, attrs: &[Attribute]) 
                 }
                 let line_span = first_line_of_span(cx, attr.span);
 
-                if let Some(mut sugg) = snippet_opt(cx, line_span) {
-                    if sugg.contains("#[") {
+                if let Some(src) = line_span.get_source_text(cx) {
+                    if src.contains("#[") {
+                        #[expect(clippy::collapsible_span_lint_calls)]
                         span_lint_and_then(cx, USELESS_ATTRIBUTE, line_span, "useless lint attribute", |diag| {
-                            sugg = sugg.replacen("#[", "#![", 1);
                             diag.span_suggestion(
                                 line_span,
                                 "if you just forgot a `!`, use",
-                                sugg,
+                                src.replacen("#[", "#![", 1),
                                 Applicability::MaybeIncorrect,
                             );
                         });

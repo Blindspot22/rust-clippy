@@ -1,7 +1,10 @@
-use crate::msrvs::Msrv;
-use crate::types::{DisallowedPath, MacroMatcher, MatchLintBehaviour, PubUnderscoreFieldsBehaviour, Rename};
 use crate::ClippyConfiguration;
-use rustc_data_structures::fx::FxHashSet;
+use crate::msrvs::Msrv;
+use crate::types::{
+    DisallowedPath, MacroMatcher, MatchLintBehaviour, PubUnderscoreFieldsBehaviour, Rename, SourceItemOrdering,
+    SourceItemOrderingCategory, SourceItemOrderingModuleItemGroupings, SourceItemOrderingModuleItemKind,
+    SourceItemOrderingTraitAssocItemKind, SourceItemOrderingTraitAssocItemKinds,
+};
 use rustc_errors::Applicability;
 use rustc_session::Session;
 use rustc_span::edit_distance::edit_distance;
@@ -18,8 +21,9 @@ use std::{cmp, env, fmt, fs, io};
 #[rustfmt::skip]
 const DEFAULT_DOC_VALID_IDENTS: &[&str] = &[
     "KiB", "MiB", "GiB", "TiB", "PiB", "EiB",
+    "MHz", "GHz", "THz",
     "AccessKit",
-    "CoreFoundation", "CoreGraphics", "CoreText",
+    "CoAP", "CoreFoundation", "CoreGraphics", "CoreText",
     "DevOps",
     "Direct2D", "Direct3D", "DirectWrite", "DirectX",
     "ECMAScript",
@@ -47,6 +51,29 @@ const DEFAULT_ALLOWED_IDENTS_BELOW_MIN_CHARS: &[&str] = &["i", "j", "x", "y", "z
 const DEFAULT_ALLOWED_PREFIXES: &[&str] = &["to", "as", "into", "from", "try_into", "try_from"];
 const DEFAULT_ALLOWED_TRAITS_WITH_RENAMED_PARAMS: &[&str] =
     &["core::convert::From", "core::convert::TryFrom", "core::str::FromStr"];
+const DEFAULT_MODULE_ITEM_ORDERING_GROUPS: &[(&str, &[SourceItemOrderingModuleItemKind])] = {
+    #[allow(clippy::enum_glob_use)] // Very local glob use for legibility.
+    use SourceItemOrderingModuleItemKind::*;
+    &[
+        ("modules", &[ExternCrate, Mod, ForeignMod]),
+        ("use", &[Use]),
+        ("macros", &[Macro]),
+        ("global_asm", &[GlobalAsm]),
+        ("UPPER_SNAKE_CASE", &[Static, Const]),
+        ("PascalCase", &[TyAlias, Enum, Struct, Union, Trait, TraitAlias, Impl]),
+        ("lower_snake_case", &[Fn]),
+    ]
+};
+const DEFAULT_TRAIT_ASSOC_ITEM_KINDS_ORDER: &[SourceItemOrderingTraitAssocItemKind] = {
+    #[allow(clippy::enum_glob_use)] // Very local glob use for legibility.
+    use SourceItemOrderingTraitAssocItemKind::*;
+    &[Const, Type, Fn]
+};
+const DEFAULT_SOURCE_ITEM_ORDERING: &[SourceItemOrderingCategory] = {
+    #[allow(clippy::enum_glob_use)] // Very local glob use for legibility.
+    use SourceItemOrderingCategory::*;
+    &[Enum, Impl, Module, Struct, Trait]
+};
 
 /// Conf with parse errors
 #[derive(Default)]
@@ -96,6 +123,32 @@ impl ConfError {
             ),
         }
     }
+}
+
+// Remove code tags and code behind '# 's, as they are not needed for the lint docs and --explain
+pub fn sanitize_explanation(raw_docs: &str) -> String {
+    // Remove tags and hidden code:
+    let mut explanation = String::with_capacity(128);
+    let mut in_code = false;
+    for line in raw_docs.lines() {
+        let line = line.strip_prefix(' ').unwrap_or(line);
+
+        if let Some(lang) = line.strip_prefix("```") {
+            let tag = lang.split_once(',').map_or(lang, |(left, _)| left);
+            if !in_code && matches!(tag, "" | "rust" | "ignore" | "should_panic" | "no_run" | "compile_fail") {
+                explanation += "```rust\n";
+            } else {
+                explanation += line;
+                explanation.push('\n');
+            }
+            in_code = !in_code;
+        } else if !(in_code && line.starts_with("# ")) {
+            explanation += line;
+            explanation.push('\n');
+        }
+    }
+
+    explanation
 }
 
 macro_rules! wrap_option {
@@ -218,7 +271,7 @@ macro_rules! define_Conf {
 define_Conf! {
     /// Which crates to allow absolute paths from
     #[lints(absolute_paths)]
-    absolute_paths_allowed_crates: FxHashSet<String> = FxHashSet::default(),
+    absolute_paths_allowed_crates: Vec<String> = Vec::new(),
     /// The maximum number of segments a path can have before being linted, anything above this will
     /// be linted.
     #[lints(absolute_paths)]
@@ -280,12 +333,12 @@ define_Conf! {
     allowed_dotfiles: Vec<String> = Vec::default(),
     /// A list of crate names to allow duplicates of
     #[lints(multiple_crate_versions)]
-    allowed_duplicate_crates: FxHashSet<String> = FxHashSet::default(),
+    allowed_duplicate_crates: Vec<String> = Vec::new(),
     /// Allowed names below the minimum allowed characters. The value `".."` can be used as part of
     /// the list to indicate, that the configured values should be appended to the default
     /// configuration of Clippy. By default, any configuration will replace the default value.
     #[lints(min_ident_chars)]
-    allowed_idents_below_min_chars: FxHashSet<String> =
+    allowed_idents_below_min_chars: Vec<String> =
         DEFAULT_ALLOWED_IDENTS_BELOW_MIN_CHARS.iter().map(ToString::to_string).collect(),
     /// List of prefixes to allow when determining whether an item's name ends with the module's name.
     /// If the rest of an item's name is an allowed prefix (e.g. item `ToFoo` or `to_foo` in module `foo`),
@@ -323,7 +376,7 @@ define_Conf! {
     /// 2. Paths with any segment that containing the word 'prelude'
     /// are already allowed by default.
     #[lints(wildcard_imports)]
-    allowed_wildcard_imports: FxHashSet<String> = FxHashSet::default(),
+    allowed_wildcard_imports: Vec<String> = Vec::new(),
     /// Suppress checking of the passed type names in all types of operations.
     ///
     /// If a specific operation is desired, consider using `arithmetic_side_effects_allowed_binary` or `arithmetic_side_effects_allowed_unary` instead.
@@ -355,7 +408,7 @@ define_Conf! {
     /// arithmetic-side-effects-allowed-binary = [["SomeType" , "f32"], ["AnotherType", "*"]]
     /// ```
     #[lints(arithmetic_side_effects)]
-    arithmetic_side_effects_allowed_binary: Vec<[String; 2]> = <_>::default(),
+    arithmetic_side_effects_allowed_binary: Vec<(String, String)> = <_>::default(),
     /// Suppress checking of the passed type names in unary operations like "negation" (`-`).
     ///
     /// #### Example
@@ -367,7 +420,7 @@ define_Conf! {
     arithmetic_side_effects_allowed_unary: Vec<String> = <_>::default(),
     /// The maximum allowed size for arrays on the stack
     #[lints(large_const_arrays, large_stack_arrays)]
-    array_size_threshold: u64 = 512_000,
+    array_size_threshold: u64 = 16 * 1024,
     /// Suppress lints whenever the suggested change would cause breakage for other crates.
     #[lints(
         box_collection,
@@ -379,6 +432,7 @@ define_Conf! {
         rc_buffer,
         rc_mutex,
         redundant_allocation,
+        ref_option,
         single_call_fn,
         trivially_copy_pass_by_ref,
         unnecessary_box_returns,
@@ -431,7 +485,7 @@ define_Conf! {
     /// * `doc-valid-idents = ["ClipPy"]` would replace the default list with `["ClipPy"]`.
     /// * `doc-valid-idents = ["ClipPy", ".."]` would append `ClipPy` to the default list.
     #[lints(doc_markdown)]
-    doc_valid_idents: FxHashSet<String> = DEFAULT_DOC_VALID_IDENTS.iter().map(ToString::to_string).collect(),
+    doc_valid_idents: Vec<String> = DEFAULT_DOC_VALID_IDENTS.iter().map(ToString::to_string).collect(),
     /// Whether to apply the raw pointer heuristic to determine if a type is `Send`.
     #[lints(non_send_fields_in_send_ty)]
     enable_raw_pointer_heuristic_for_send: bool = true,
@@ -506,6 +560,9 @@ define_Conf! {
     /// crate. For example, `pub(crate)` items.
     #[lints(missing_docs_in_private_items)]
     missing_docs_in_crate_items: bool = false,
+    /// The named groupings of different source item kinds within modules.
+    #[lints(arbitrary_source_item_ordering)]
+    module_item_order_groupings: SourceItemOrderingModuleItemGroupings = DEFAULT_MODULE_ITEM_ORDERING_GROUPS.into(),
     /// The minimum rust version that the project supports. Defaults to the `rust-version` field in `Cargo.toml`
     #[default_text = "current version"]
     #[lints(
@@ -546,6 +603,7 @@ define_Conf! {
         manual_try_fold,
         map_clone,
         map_unwrap_or,
+        map_with_unused_argument_over_ranges,
         match_like_matches_macro,
         mem_replace_with_default,
         missing_const_for_fn,
@@ -564,6 +622,7 @@ define_Conf! {
         uninlined_format_args,
         unnecessary_lazy_evaluations,
         unnested_or_patterns,
+        unused_trait_names,
         use_self,
     )]
     msrv: Msrv = Msrv::empty(),
@@ -583,6 +642,9 @@ define_Conf! {
     /// The maximum number of single char bindings a scope may have
     #[lints(many_single_char_names)]
     single_char_binding_names_threshold: u64 = 4,
+    /// Which kind of elements should be ordered internally, possible values being `enum`, `impl`, `module`, `struct`, `trait`.
+    #[lints(arbitrary_source_item_ordering)]
+    source_item_ordering: SourceItemOrdering = DEFAULT_SOURCE_ITEM_ORDERING.into(),
     /// The maximum allowed stack size for functions in bytes
     #[lints(large_stack_frames)]
     stack_size_threshold: u64 = 512_000,
@@ -612,6 +674,9 @@ define_Conf! {
     /// The maximum number of lines a function or method can have
     #[lints(too_many_lines)]
     too_many_lines_threshold: u64 = 100,
+    /// The order of associated items in traits.
+    #[lints(arbitrary_source_item_ordering)]
+    trait_assoc_item_kinds_order: SourceItemOrderingTraitAssocItemKinds = DEFAULT_TRAIT_ASSOC_ITEM_KINDS_ORDER.into(),
     /// The maximum size (in bytes) to consider a `Copy` type for passing by value instead of by
     /// reference. By default there is no limit
     #[default_text = "target_pointer_width * 2"]
@@ -706,12 +771,12 @@ fn deserialize(file: &SourceFile) -> TryConf {
                 DEFAULT_ALLOWED_TRAITS_WITH_RENAMED_PARAMS,
             );
             // TODO: THIS SHOULD BE TESTED, this comment will be gone soon
-            if conf.conf.allowed_idents_below_min_chars.contains("..") {
+            if conf.conf.allowed_idents_below_min_chars.iter().any(|e| e == "..") {
                 conf.conf
                     .allowed_idents_below_min_chars
                     .extend(DEFAULT_ALLOWED_IDENTS_BELOW_MIN_CHARS.iter().map(ToString::to_string));
             }
-            if conf.conf.doc_valid_idents.contains("..") {
+            if conf.conf.doc_valid_idents.iter().any(|e| e == "..") {
                 conf.conf
                     .doc_valid_idents
                     .extend(DEFAULT_DOC_VALID_IDENTS.iter().map(ToString::to_string));
@@ -865,7 +930,7 @@ fn calculate_dimensions(fields: &[&str]) -> (usize, Vec<usize>) {
             cmp::max(1, terminal_width / (SEPARATOR_WIDTH + max_field_width))
         });
 
-    let rows = (fields.len() + (columns - 1)) / columns;
+    let rows = fields.len().div_ceil(columns);
 
     let column_widths = (0..columns)
         .map(|column| {
@@ -890,14 +955,14 @@ fn calculate_dimensions(fields: &[&str]) -> (usize, Vec<usize>) {
 
 #[cfg(test)]
 mod tests {
-    use rustc_data_structures::fx::{FxHashMap, FxHashSet};
     use serde::de::IgnoredAny;
+    use std::collections::{HashMap, HashSet};
     use std::fs;
     use walkdir::WalkDir;
 
     #[test]
     fn configs_are_tested() {
-        let mut names: FxHashSet<String> = crate::get_configuration_metadata()
+        let mut names: HashSet<String> = crate::get_configuration_metadata()
             .into_iter()
             .map(|meta| meta.name.replace('_', "-"))
             .collect();
@@ -910,7 +975,7 @@ mod tests {
         for entry in toml_files {
             let file = fs::read_to_string(entry.path()).unwrap();
             #[allow(clippy::zero_sized_map_values)]
-            if let Ok(map) = toml::from_str::<FxHashMap<String, IgnoredAny>>(&file) {
+            if let Ok(map) = toml::from_str::<HashMap<String, IgnoredAny>>(&file) {
                 for name in map.keys() {
                     names.remove(name.as_str());
                 }

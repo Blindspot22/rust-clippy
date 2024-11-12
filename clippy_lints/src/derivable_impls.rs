@@ -1,5 +1,5 @@
-use clippy_config::msrvs::{self, Msrv};
 use clippy_config::Conf;
+use clippy_config::msrvs::{self, Msrv};
 use clippy_utils::diagnostics::span_lint_and_then;
 use clippy_utils::source::indent_of;
 use clippy_utils::{is_default_equivalent, peel_blocks};
@@ -187,7 +187,7 @@ fn check_enum<'tcx>(cx: &LateContext<'tcx>, item: &'tcx Item<'_>, func_expr: &Ex
 impl<'tcx> LateLintPass<'tcx> for DerivableImpls {
     fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx Item<'_>) {
         if let ItemKind::Impl(Impl {
-            of_trait: Some(ref trait_ref),
+            of_trait: Some(trait_ref),
             items: [child],
             self_ty,
             ..

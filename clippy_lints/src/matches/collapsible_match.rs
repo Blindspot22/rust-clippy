@@ -4,7 +4,7 @@ use clippy_utils::higher::IfLetOrMatch;
 use clippy_utils::source::snippet;
 use clippy_utils::visitors::is_local_used;
 use clippy_utils::{
-    is_res_lang_ctor, is_unit_expr, path_to_local, peel_blocks_with_stmt, peel_ref_operators, SpanlessEq,
+    SpanlessEq, is_res_lang_ctor, is_unit_expr, path_to_local, peel_blocks_with_stmt, peel_ref_operators,
 };
 use rustc_errors::MultiSpan;
 use rustc_hir::LangItem::OptionNone;
@@ -12,7 +12,7 @@ use rustc_hir::{Arm, Expr, HirId, Pat, PatKind};
 use rustc_lint::LateContext;
 use rustc_span::Span;
 
-use super::{pat_contains_disallowed_or, COLLAPSIBLE_MATCH};
+use super::{COLLAPSIBLE_MATCH, pat_contains_disallowed_or};
 
 pub(super) fn check_match<'tcx>(cx: &LateContext<'tcx>, arms: &'tcx [Arm<'_>], msrv: &Msrv) {
     if let Some(els_arm) = arms.iter().rfind(|arm| arm_is_wild_like(cx, arm)) {
@@ -96,7 +96,7 @@ fn check_arm<'tcx>(
         // collapsing patterns need an explicit field name in struct pattern matching
         // ex: Struct {x: Some(1)}
         let replace_msg = if is_innermost_parent_pat_struct {
-            format!(", prefixed by {}:", snippet(cx, binding_span, "their field name"))
+            format!(", prefixed by `{}`:", snippet(cx, binding_span, "their field name"))
         } else {
             String::new()
         };

@@ -2,12 +2,11 @@ use super::implicit_clone::is_clone_like;
 use super::unnecessary_iter_cloned::{self, is_into_iter};
 use clippy_config::msrvs::{self, Msrv};
 use clippy_utils::diagnostics::{span_lint_and_sugg, span_lint_and_then};
-use clippy_utils::source::{snippet, snippet_opt};
+use clippy_utils::source::{SpanRangeExt, snippet};
 use clippy_utils::ty::{get_iterator_item_ty, implements_trait, is_copy, is_type_diagnostic_item, is_type_lang_item};
 use clippy_utils::visitors::find_all_ret_expressions;
 use clippy_utils::{
-    fn_def_id, get_parent_expr, is_diag_item_method, is_diag_trait_item, match_def_path, paths, peel_middle_ty_refs,
-    return_ty,
+    fn_def_id, get_parent_expr, is_diag_item_method, is_diag_trait_item, peel_middle_ty_refs, return_ty,
 };
 use rustc_errors::Applicability;
 use rustc_hir::def::{DefKind, Res};
@@ -20,7 +19,7 @@ use rustc_middle::ty::adjustment::{Adjust, Adjustment, OverloadedDeref};
 use rustc_middle::ty::{
     self, ClauseKind, GenericArg, GenericArgKind, GenericArgsRef, ParamTy, ProjectionPredicate, TraitPredicate, Ty,
 };
-use rustc_span::{sym, Symbol};
+use rustc_span::{Symbol, sym};
 use rustc_trait_selection::traits::query::evaluate_obligation::InferCtxtExt as _;
 use rustc_trait_selection::traits::{Obligation, ObligationCause};
 
@@ -133,7 +132,7 @@ fn check_addr_of_expr(
         && (*referent_ty != receiver_ty
             || (matches!(referent_ty.kind(), ty::Array(..)) && is_copy(cx, *referent_ty))
             || is_cow_into_owned(cx, method_name, method_def_id))
-        && let Some(receiver_snippet) = snippet_opt(cx, receiver.span)
+        && let Some(receiver_snippet) = receiver.span.get_source_text(cx)
     {
         if receiver_ty == target_ty && n_target_refs >= n_receiver_refs {
             span_lint_and_sugg(
@@ -167,7 +166,7 @@ fn check_addr_of_expr(
                     parent.span,
                     format!("unnecessary use of `{method_name}`"),
                     "use",
-                    receiver_snippet,
+                    receiver_snippet.to_owned(),
                     Applicability::MachineApplicable,
                 );
             } else {
@@ -217,7 +216,7 @@ fn check_into_iter_call_arg(
         && let parent_ty = cx.typeck_results().expr_ty(parent)
         && implements_trait(cx, parent_ty, iterator_trait_id, &[])
         && let Some(item_ty) = get_iterator_item_ty(cx, parent_ty)
-        && let Some(receiver_snippet) = snippet_opt(cx, receiver.span)
+        && let Some(receiver_snippet) = receiver.span.get_source_text(cx)
     {
         if unnecessary_iter_cloned::check_for_loop_iter(cx, parent, method_name, receiver, true) {
             return true;
@@ -250,7 +249,7 @@ fn check_string_from_utf8<'tcx>(cx: &LateContext<'tcx>, expr: &'tcx Expr<'tcx>, 
     if let Some((call, arg)) = skip_addr_of_ancestors(cx, expr)
         && !arg.span.from_expansion()
         && let ExprKind::Call(callee, _) = call.kind
-        && fn_def_id(cx, call).is_some_and(|did| match_def_path(cx, did, &paths::STRING_FROM_UTF8))
+        && fn_def_id(cx, call).is_some_and(|did| cx.tcx.is_diagnostic_item(sym::string_from_utf8, did))
         && let Some(unwrap_call) = get_parent_expr(cx, call)
         && let ExprKind::MethodCall(unwrap_method_name, ..) = unwrap_call.kind
         && matches!(unwrap_method_name.ident.name, sym::unwrap | sym::expect)
@@ -309,8 +308,8 @@ fn check_split_call_arg(cx: &LateContext<'_>, expr: &Expr<'_>, method_name: Symb
     if let Some(parent) = get_parent_expr(cx, expr)
         && let Some((fn_name, argument_expr)) = get_fn_name_and_arg(cx, parent)
         && fn_name.as_str() == "split"
-        && let Some(receiver_snippet) = snippet_opt(cx, receiver.span)
-        && let Some(arg_snippet) = snippet_opt(cx, argument_expr.span)
+        && let Some(receiver_snippet) = receiver.span.get_source_text(cx)
+        && let Some(arg_snippet) = argument_expr.span.get_source_text(cx)
     {
         // We may end-up here because of an expression like `x.to_string().split(…)` where the type of `x`
         // implements `AsRef<str>` but does not implement `Deref<Target = str>`. In this case, we have to
@@ -405,7 +404,7 @@ fn check_other_call_arg<'tcx>(
             None
         }
         && can_change_type(cx, maybe_arg, receiver_ty)
-        && let Some(receiver_snippet) = snippet_opt(cx, receiver.span)
+        && let Some(receiver_snippet) = receiver.span.get_source_text(cx)
     {
         span_lint_and_sugg(
             cx,
@@ -569,7 +568,7 @@ fn can_change_type<'a>(cx: &LateContext<'a>, mut expr: &'a Expr<'a>, mut ty: Ty<
                             let obligation = Obligation::new(cx.tcx, ObligationCause::dummy(), cx.param_env, predicate);
                             !cx.tcx
                                 .infer_ctxt()
-                                .build()
+                                .build(cx.typing_mode())
                                 .predicate_must_hold_modulo_regions(&obligation)
                         }) {
                             return false;
@@ -695,7 +694,7 @@ fn check_if_applicable_to_argument<'tcx>(cx: &LateContext<'tcx>, arg: &Expr<'tcx
         && let arg_ty = arg_ty.peel_refs()
         // For now we limit this lint to `String` and `Vec`.
         && (is_str_and_string(cx, arg_ty, original_arg_ty) || is_slice_and_vec(cx, arg_ty, original_arg_ty))
-        && let Some(snippet) = snippet_opt(cx, caller.span)
+        && let Some(snippet) = caller.span.get_source_text(cx)
     {
         span_lint_and_sugg(
             cx,
@@ -706,7 +705,7 @@ fn check_if_applicable_to_argument<'tcx>(cx: &LateContext<'tcx>, arg: &Expr<'tcx
             if original_arg_ty.is_array() {
                 format!("{snippet}.as_slice()")
             } else {
-                snippet
+                snippet.to_owned()
             },
             Applicability::MaybeIncorrect,
         );
@@ -717,7 +716,7 @@ fn check_if_applicable_to_argument<'tcx>(cx: &LateContext<'tcx>, arg: &Expr<'tcx
 // check that:
 // 1. This is a method with only one argument that doesn't come from a trait.
 // 2. That it has `Borrow` in its generic predicates.
-// 3. `Self` is a std "map type" (ie `HashSet`, `HashMap`, BTreeSet`, `BTreeMap`).
+// 3. `Self` is a std "map type" (ie `HashSet`, `HashMap`, `BTreeSet`, `BTreeMap`).
 fn check_borrow_predicate<'tcx>(cx: &LateContext<'tcx>, expr: &Expr<'tcx>) {
     if let ExprKind::MethodCall(_, caller, &[arg], _) = expr.kind
         && let Some(method_def_id) = cx.typeck_results().type_dependent_def_id(expr.hir_id)

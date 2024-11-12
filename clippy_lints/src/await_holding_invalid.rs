@@ -7,7 +7,7 @@ use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::mir::CoroutineLayout;
 use rustc_middle::ty::TyCtxt;
 use rustc_session::impl_lint_pass;
-use rustc_span::{sym, Span};
+use rustc_span::{Span, sym};
 
 declare_clippy_lint! {
     /// ### What it does
@@ -15,7 +15,7 @@ declare_clippy_lint! {
     /// `MutexGuard`.
     ///
     /// ### Why is this bad?
-    /// The Mutex types found in [`std::sync`][https://doc.rust-lang.org/stable/std/sync/] and
+    /// The Mutex types found in [`std::sync`](https://doc.rust-lang.org/stable/std/sync/) and
     /// [`parking_lot`](https://docs.rs/parking_lot/latest/parking_lot/) are
     /// not designed to operate in an async context across await points.
     ///

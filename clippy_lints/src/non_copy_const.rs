@@ -1,14 +1,10 @@
-//! Checks for usage of const which the type is not `Freeze` (`Cell`-free).
-//!
-//! This lint is **warn** by default.
-
 use std::ptr;
 
 use clippy_config::Conf;
 use clippy_utils::diagnostics::span_lint_and_then;
-use clippy_utils::in_constant;
+use clippy_utils::is_in_const_context;
 use clippy_utils::macros::macro_backtrace;
-use clippy_utils::ty::{implements_trait, InteriorMut};
+use clippy_utils::ty::{InteriorMut, implements_trait};
 use rustc_hir::def::{DefKind, Res};
 use rustc_hir::def_id::DefId;
 use rustc_hir::{
@@ -19,7 +15,7 @@ use rustc_middle::mir::interpret::{ErrorHandled, EvalToValTreeResult, GlobalId};
 use rustc_middle::ty::adjustment::Adjust;
 use rustc_middle::ty::{self, Ty, TyCtxt};
 use rustc_session::impl_lint_pass;
-use rustc_span::{sym, Span, DUMMY_SP};
+use rustc_span::{DUMMY_SP, Span, sym};
 use rustc_target::abi::VariantIdx;
 
 // FIXME: this is a correctness problem but there's no suitable
@@ -188,7 +184,7 @@ impl_lint_pass!(NonCopyConst<'_> => [DECLARE_INTERIOR_MUTABLE_CONST, BORROW_INTE
 impl<'tcx> NonCopyConst<'tcx> {
     pub fn new(tcx: TyCtxt<'tcx>, conf: &'static Conf) -> Self {
         Self {
-            interior_mut: InteriorMut::new(tcx, &conf.ignore_interior_mutability),
+            interior_mut: InteriorMut::without_pointers(tcx, &conf.ignore_interior_mutability),
         }
     }
 
@@ -406,7 +402,7 @@ impl<'tcx> LateLintPass<'tcx> for NonCopyConst<'tcx> {
     fn check_expr(&mut self, cx: &LateContext<'tcx>, expr: &'tcx Expr<'_>) {
         if let ExprKind::Path(qpath) = &expr.kind {
             // Only lint if we use the const item inside a function.
-            if in_constant(cx, expr.hir_id) {
+            if is_in_const_context(cx) {
                 return;
             }
 
